@@ -47,7 +47,7 @@ The host remains responsible for reasoning and authority. BananaMe is the determ
 
 > **Agents decide. BananaMe observes, mutates and verifies repository state.**
 
-BananaMe is independent of MangoMe, SPARI, AVCOS and any model/provider. MangoMe may govern BananaMe. SPARI may decide what should be reused or built. Neither is required to run BananaMe.
+BananaMe is independent and any model/provider. MangoMe may govern BananaMe. SPARI may decide what should be reused or built. Neither is required to run BananaMe.
 
 ---
 
