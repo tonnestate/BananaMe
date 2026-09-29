@@ -21,30 +21,20 @@ Agent reasoning / planning / governance
 BananaMe owns three things:
 
 1. bounded repository observation;
-2. guarded transactional source mutation;
+2. guarded and recoverable source mutation;
 3. machine-readable verification evidence.
 
-BananaMe explicitly does not own:
+BananaMe explicitly does not own task planning, model inference/routing, long-term agent memory, work-item governance, Git commit policy, deployment policy, acceptance, or independent assurance.
 
-- task planning;
-- model inference or routing;
-- long-term agent memory;
-- work-item/state-machine governance;
-- Git commit policy;
-- deployment policy;
-- acceptance or independent assurance.
-
-This keeps BananaMe usable by MangoMe, SPARI, Claude Code, Codex, Copilot, OpenHands or another host without embedding any of them.
-
-## v0.1 component map
+## v0.1.1 component map
 
 ```text
 src/bananame/
 ├── core.py        # stable three-operation facade + machine-readable failures
-├── understand.py  # repository observation/localization
-├── mutate.py      # guarded edit transaction + rollback
-├── verify.py      # syntax and explicit command evidence
-├── workspace.py   # path confinement, snapshots, atomic writes
+├── understand.py  # bounded observation/localization + completeness metadata
+├── mutate.py      # optimistic validation + journaled mutation/rollback/recovery
+├── verify.py      # syntax/command evidence + explicit evidence states
+├── workspace.py   # confinement, snapshots, atomic writes, commit-phase lock
 ├── git.py         # HEAD, dirty state, inventory, co-change history
 ├── cli.py         # JSON CLI adapter
 └── mcp_server.py  # optional MCP adapter
@@ -52,125 +42,111 @@ src/bananame/
 
 ## UNDERSTAND
 
-The current read-side pipeline is:
+v0.1.1 keeps lexical/Python-AST intelligence deliberately small but makes incompleteness explicit:
 
 ```text
 workspace
-   │
    ├─ Git HEAD / dirty state
    ├─ tracked + untracked inventory
+   │    └─ explicit truncation metadata
+   ├─ exact/hot-file evidence
+   │    ├─ SHA-256 guard
+   │    ├─ bounded content
+   │    └─ Python symbol summary where available
    ├─ ripgrep lexical localization
-   │    └─ deterministic Python fallback when rg is absent
-   ├─ hot-file inclusion
-   ├─ SHA-256 source guards
-   ├─ Python AST symbol extraction
-   │    ├─ class/function/method
-   │    ├─ qualified name
-   │    └─ body hash
-   ├─ bounded source context
+   │    └─ deterministic Python fallback
+   ├─ Python AST enclosing-symbol extraction
    └─ bounded Git co-change evidence
 ```
 
-The output is bounded by `max_context_bytes` and `max_results` so repository understanding does not become an uncontrolled context dump.
+The next intelligence milestone is adaptive exact/lexical/structural/graph/history retrieval behind the same `understand` operation.
 
-## MUTATE
+## MUTATE: optimistic target validation
 
-The current write-side pipeline is:
-
-```text
-request
-  │
-  ├─ workspace confinement
-  ├─ optional expected Git HEAD guard
-  ├─ per-file SHA-256 guard
-  ├─ exact unique SEARCH resolution
-  ├─ newline adaptation
-  ├─ construct every changed file in memory
-  ├─ syntax preflight
-  ├─ persist transaction manifest + before-images + diff
-  ├─ atomic per-file replacement
-  └─ restore already-written files if the write phase fails
-```
-
-The preflight is all-or-nothing with respect to source mutation: no source write occurs until every proposed edit has resolved and passed preflight.
-
-The subsequent write phase uses atomic replacement per file. If a later file write fails, files already written by the transaction are restored from their captured before-images.
-
-## ROLLBACK
-
-Rollback is hash-owned rather than Git-reset-based.
-
-For each changed file BananaMe compares the current SHA-256 against the transaction's recorded `after_hash`.
-
-If every file is still owned by the transaction, the captured before-image may be restored. If any file differs, rollback fails with `ROLLBACK_CONFLICT` and leaves the repository untouched.
-
-This prevents a stale rollback from destroying later human or agent work.
-
-## VERIFY
-
-Verification is a separate evidence phase.
-
-Built-in parsers/checkers in v0.1:
+The normal concurrency boundary is the actual mutation target, not the whole repository.
 
 ```text
-.py          python compile()
-.json        json.loads()
-.toml        tomllib.loads()
-.xml/.svg    xml.etree.ElementTree
+observe file hashes
+      ↓
+preflight without long lock
+      ↓
+short BananaMe commit-phase lock
+      ↓
+revalidate every target hash
+      ↓
+write-ahead transaction journal
+      ↓
+final compare before each target write
+      ↓
+atomic replace + after-hash verification
 ```
 
-Optional local runtime checks when executables exist:
+`expected_head` is optional. Supplying it requests stricter repository-wide consistency; omitting it allows unrelated HEAD movement as long as target files remain unchanged.
+
+The lock coordinates BananaMe writers and automatically releases on process death. It is intentionally not a claim that arbitrary external editors honor the same lock.
+
+## Exact edit resolution
+
+All edits for one file are resolved against the same original snapshot. BananaMe requires exactly one occurrence per SEARCH block, maps each edit to a concrete span, rejects overlapping spans, and applies non-overlapping spans from the end of the file toward the beginning.
+
+This removes edit-order dependence without introducing fuzzy matching.
+
+## Journaled write phase and crash recovery
+
+v0.1.1 uses `bananame-transaction/2`:
 
 ```text
-.js/.mjs/.cjs   node --check
-.php            php -l
-.sh/.bash       bash -n
+PREPARED → APPLYING → APPLIED
+                 ↘
+                  RECOVERY_REQUIRED
 ```
 
-The caller may also provide explicit argv commands. BananaMe resolves the executable, applies a bounded timeout and captures bounded stdout/stderr. Shell strings are rejected and `shell=True` is not used.
+The journal records before/after hashes and per-file progress before dependent source writes. Atomic file replacement fsyncs the temporary file and best-effort fsyncs the parent directory on supported platforms.
 
-## Transaction evidence
+Recovery classifies targets by checksum:
 
-Every successful mutation has a transaction directory:
+- `BEFORE`: intended write is absent;
+- `AFTER`: intended write is present;
+- unknown: fail closed with `RECOVERY_CONFLICT`.
+
+Mixed known states are rolled back to captured before-images. An all-after state is marked `APPLIED_RECOVERED`.
+
+This is crash-recoverable application-level mutation, not filesystem-wide ACID.
+
+## VERIFY: evidence completeness
+
+v0.1.1 distinguishes execution from evidence:
 
 ```text
-.bananame/transactions/<id>/
-├── manifest.json
-├── diff.patch
-└── before/
+VERIFIED
+PARTIAL
+NOT_VERIFIED
+VERIFICATION_FAILED
 ```
 
-This is local derived state. It is not agent memory and is not a governance ledger.
+A missing checker produces `SKIP` and can no longer be collapsed into a positive verification result.
+
+Built-in checkers remain intentionally small in v0.1.1: Python, JSON, TOML and XML/SVG, plus local `node --check`, `php -l` and `bash -n` when available. Additional language validation belongs in an optional checker registry rather than mandatory core dependencies.
 
 ## Independence
 
 BananaMe has no dependency on MangoMe, SPARI, AVCOS or any model/provider. Those systems may call or govern BananaMe externally.
 
-The intended authority relationship is:
+## Research-backed evolution
 
-```text
-host decides whether an effect is allowed
-           ↓
-BananaMe performs guarded repository mechanics
-           ↓
-BananaMe returns evidence
-           ↓
-host decides whether evidence permits promotion
-```
+See [Research Basis](research-basis.md). The next planned internal progression is:
 
-## Target evolution
-
-v0.1 establishes protocol and safe mutation. Planned internal evolution without expanding the public tool surface:
-
-1. content-addressed per-file parse cache;
+1. optional ast-grep structural provider;
 2. cross-language stable symbol identity;
-3. typed relation graph (`CALLS`, `IMPORTS`, `IMPLEMENTS`, `USES_TYPE`, `TESTS`, `DATA_FLOWS`);
-4. dirty-delta graph over the current working tree;
-5. impact neighborhoods and semantic diff;
-6. optional ast-grep structural localization/rewrite;
-7. adaptive retrieval combining exact, lexical, structural, graph, history and semantic recall;
+3. content-addressed per-file parse/index cache;
+4. import/call/type/test relation graph;
+5. symbol/body-hash mutation;
+6. impact neighborhoods and semantic diff;
+7. adaptive retrieval across exact, lexical, structural, graph and history evidence;
 8. controlled A/B/C evaluation against Aider and simpler baselines.
 
-## Shallow repository invariant
+## Shallow BananaMe repository invariant
 
-BananaMe deliberately avoids deep directory trees because several agent/file-transfer paths become unreliable beyond two directory levels. Ordinary project files therefore stay at directory depth <= 2. The required `.github/workflows/` path is the only infrastructure exception. The packaged Agent Skill is stored directly at `src/bananame/SKILL.md`; the repository mirror remains `skill/SKILL.md`.
+The shallow-layout convention applies only to **BananaMe's own repository/release artifacts** because some agent/file-transfer paths used by this project are unreliable beyond two generated directory levels. It does not constrain target repositories. Deep target paths are explicitly tested.
+
+`.github/workflows/` is the required infrastructure exception inside BananaMe.

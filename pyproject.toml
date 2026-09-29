@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bananame-code"
-version = "0.1.0"
+version = "0.1.1"
 description = "Headless AI-to-AI coding substrate for bounded repository understanding, guarded transactional mutation, and machine-verifiable evidence."
 readme = "README.md"
 requires-python = ">=3.10"

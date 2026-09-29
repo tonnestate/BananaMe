@@ -1,6 +1,6 @@
 # Third-Party Notices and Conceptual Prior Art
 
-BananaMe v0.1.0 is independently implemented. It does not vendor source code from the projects below.
+BananaMe v0.1.1 is independently implemented. It does not vendor source code from the projects below.
 
 - Aider — https://github.com/Aider-AI/aider — Apache-2.0 — repository mapping, SEARCH/REPLACE editing, Git-native coding workflow.
 - agentpatch — https://github.com/pixle-codes/agentpatch — MIT — agent patch formats, exact/ambiguous patch semantics, newline-preserving patch application.

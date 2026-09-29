@@ -25,7 +25,9 @@ def main() -> None:
     p_mutate = sub.add_parser("mutate")
     p_mutate.add_argument("--edits-json", type=_json, default=[])
     p_mutate.add_argument("--expected-head")
-    p_mutate.add_argument("--rollback")
+    mode = p_mutate.add_mutually_exclusive_group()
+    mode.add_argument("--rollback")
+    mode.add_argument("--recover")
 
     p_verify = sub.add_parser("verify")
     p_verify.add_argument("--path", action="append", default=[])
@@ -43,9 +45,11 @@ def main() -> None:
             max_results=args.max_results,
         )
     elif args.command == "mutate":
+        action = "recover" if args.recover else "rollback" if args.rollback else "apply"
+        transaction_id = args.recover or args.rollback
         result = tool.mutate(
-            action="rollback" if args.rollback else "apply",
-            transaction_id=args.rollback,
+            action=action,
+            transaction_id=transaction_id,
             edits=args.edits_json,
             expected_head=args.expected_head,
         )

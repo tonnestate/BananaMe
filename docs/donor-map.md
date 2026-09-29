@@ -11,4 +11,7 @@ BananaMe is not an Aider fork. It is a reuse-first composition target.
 | Indexing | Continue / Entire Graph | content-addressed per-file invalidation target |
 | Verification | existing language tools | machine-readable evidence without promotion authority |
 
-v0.1 intentionally implements only the smallest safe subset required to freeze the protocol before heavier graph machinery is selected.
+v0.1.1 intentionally implements only the smallest safe subset required to freeze the protocol before heavier graph machinery is selected.
+
+
+Research references for the next intelligence layer include RepoGraph, LocAgent, ARISE, Repository Intelligence Graph, Repository Memory and Agent Retrieval Bench. See `research-basis.md`.

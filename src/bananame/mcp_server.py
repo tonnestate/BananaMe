@@ -9,6 +9,7 @@ except ImportError as exc:  # pragma: no cover - optional dependency
     raise RuntimeError("Install BananaMe with the 'mcp' extra: pip install 'bananame-code[mcp]'") from exc
 
 from . import __version__
+from .binding import mcp_workspace_root
 from .core import safe_call
 from .mutate import mutate as mutate_core
 from .understand import understand as understand_core
@@ -21,7 +22,8 @@ mcp = MCPServer(
         "BananaMe exposes exactly three agent operations: understand, mutate, verify. "
         "It contains no planner, LLM, memory system or governance layer. Use understand before mutation to obtain current file hashes. "
         "mutate requires exact SEARCH/REPLACE blocks guarded by the file SHA-256 and optionally the Git HEAD. "
-        "A mutation is not a commit or proof of correctness. Call verify after mutation. "
+        "The MCP host binds one workspace through BANANAME_WORKSPACE_ROOT; the agent cannot select an arbitrary filesystem root. "
+        "Mutations use target hashes, a short commit-phase lock and crash-recovery journals. A mutation is not a commit or proof of correctness. Call verify after mutation. "
         "Promotion, commit, deployment and independent assurance belong to the host/control plane."
     ),
     version=__version__,
@@ -30,7 +32,6 @@ mcp = MCPServer(
 
 @mcp.tool()
 def understand(
-    workspace_root: str,
     query: str = "",
     hot_files: list[str] | None = None,
     max_context_bytes: int = 8192,
@@ -38,37 +39,37 @@ def understand(
 ) -> dict[str, Any]:
     """Return compact, structured repository evidence without modifying the workspace."""
     return safe_call(
-        understand_core,
-        workspace_root,
-        query=query,
-        hot_files=hot_files,
-        max_context_bytes=max_context_bytes,
-        max_results=max_results,
+        lambda: understand_core(
+            mcp_workspace_root(),
+            query=query,
+            hot_files=hot_files,
+            max_context_bytes=max_context_bytes,
+            max_results=max_results,
+        )
     )
 
 
 @mcp.tool()
 def mutate(
-    workspace_root: str,
     edits: list[dict[str, str]] | None = None,
     expected_head: str | None = None,
     action: str = "apply",
     transaction_id: str | None = None,
 ) -> dict[str, Any]:
-    """Apply or rollback a guarded transactional SEARCH/REPLACE mutation. Never commits."""
+    """Apply, rollback or recover a guarded journaled SEARCH/REPLACE mutation. Never commits."""
     return safe_call(
-        mutate_core,
-        workspace_root,
-        edits=edits,
-        expected_head=expected_head,
-        action=action,
-        transaction_id=transaction_id,
+        lambda: mutate_core(
+            mcp_workspace_root(),
+            edits=edits,
+            expected_head=expected_head,
+            action=action,
+            transaction_id=transaction_id,
+        )
     )
 
 
 @mcp.tool()
 def verify(
-    workspace_root: str,
     paths: list[str] | None = None,
     transaction_id: str | None = None,
     commands: list[list[str]] | None = None,
@@ -76,12 +77,13 @@ def verify(
 ) -> dict[str, Any]:
     """Verify syntax and explicit argv-based commands and return machine-readable evidence."""
     return safe_call(
-        verify_core,
-        workspace_root,
-        paths=paths,
-        transaction_id=transaction_id,
-        commands=commands,
-        timeout_seconds=timeout_seconds,
+        lambda: verify_core(
+            mcp_workspace_root(),
+            paths=paths,
+            transaction_id=transaction_id,
+            commands=commands,
+            timeout_seconds=timeout_seconds,
+        )
     )
 
 

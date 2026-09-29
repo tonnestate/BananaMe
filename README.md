@@ -12,7 +12,7 @@
 <p align="center">
   <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue">
   <img alt="Status" src="https://img.shields.io/badge/status-experimental-orange">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.1.0-yellow">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.1.1-yellow">
   <img alt="Python" src="https://img.shields.io/badge/python-%3E%3D3.10-3776AB">
   <img alt="MCP" src="https://img.shields.io/badge/MCP-optional-5b5bd6">
   <img alt="Agent Skill" src="https://img.shields.io/badge/agent-skill-purple">
@@ -51,11 +51,11 @@ BananaMe is independent of MangoMe, SPARI, AVCOS and any model/provider. MangoMe
 
 ---
 
-## What BananaMe v0.1.0 can do today
+## What BananaMe v0.1.1 can do today
 
-v0.1.0 is intentionally small, but it is not a mock-up. The first release establishes a usable repository-understanding, mutation and verification path with machine-readable evidence.
+v0.1.1 hardens the first usable repository-understanding, mutation and verification path around concurrency, crash recovery and explicit evidence completeness. The public interface remains exactly `understand → mutate → verify`.
 
-| Capability | v0.1.0 behavior |
+| Capability | v0.1.1 behavior |
 |---|---|
 | Repository observation | Reads Git HEAD, dirty state and repository inventory without modifying source files. |
 | Bounded localization | Uses `ripgrep` when available and a deterministic Python fallback otherwise. Results are ranked and bounded by a context budget. |
@@ -65,23 +65,23 @@ v0.1.0 is intentionally small, but it is not a mock-up. The first release establ
 | Git-history hints | Computes bounded co-change evidence for files that historically changed with the current candidate files. |
 | Surgical edits | Applies exact SEARCH/REPLACE blocks instead of asking an LLM to rewrite complete files. |
 | Ambiguity refusal | Zero matches fail. Multiple matches fail. BananaMe never silently chooses an arbitrary match. |
-| Stale-state protection | Can require both an expected Git HEAD and expected per-file SHA-256 hashes. |
-| Multi-file transaction preflight | Resolves and validates every proposed edit in memory before the first source write. |
+| Target-scoped optimistic concurrency | Per-file SHA-256 guards are mandatory. The repository-wide `expected_head` guard remains optional for strict tasks. Targets are revalidated under a short mutation lock and again immediately before each write. |
+| Multi-file transaction preflight | Resolves every proposed edit against the same original file snapshots, rejects overlapping spans, and validates all changed files before the first source write. |
 | Newline preservation | Adapts replacement text to the target file's LF/CRLF convention instead of normalizing the entire file. |
 | Syntax preflight | Validates changed Python, JSON, TOML and XML/SVG content before writes are accepted. |
 | Atomic file replacement | Writes through a temporary file, flushes it and atomically replaces the target with `os.replace`. |
-| Transaction evidence | Persists a manifest, before-hashes, after-hashes, backups and a unified diff under `.bananame/transactions/`. |
+| Recoverable transaction journal | Persists before-images, intended after-hashes, per-file progress and a unified diff before source mutation, enabling explicit recovery after process interruption. |
 | Safe rollback | Restores a transaction only if the files still contain the exact post-transaction hashes. Later human/agent work is never overwritten silently. |
-| Verification | Re-checks syntax and can execute explicit lint/test commands as argv arrays without `shell=True`. |
+| Verification truth states | Separates `VERIFIED`, `PARTIAL`, `NOT_VERIFIED` and `VERIFICATION_FAILED` so missing checker coverage cannot be reported as success. |
 | Additional syntax tools | Uses `node --check`, `php -l` and `bash -n` when those runtimes exist. |
-| Machine protocol | CLI, Python API, Agent Skill and optional MCP server all call the same core implementation. |
+| Machine protocol | CLI, Python API, Agent Skill and optional MCP server all call the same core implementation. MCP binds its workspace on the host side instead of accepting an arbitrary agent-supplied root. |
 | No automatic promotion | BananaMe never commits, deploys, approves or converts a passing test into an acceptance decision. |
 
-The core package has **no mandatory third-party runtime dependencies** in v0.1.0. MCP support is an optional extra.
+The core package still has **no mandatory third-party runtime dependencies** in v0.1.1. MCP support is an optional extra. Structural/graph providers are intentionally deferred rather than hidden inside the core.
 
 ### Repository/layout invariant
 
-BananaMe intentionally keeps the repository shallow. Ordinary project files stay at a maximum directory depth of two because deeper layouts have repeatedly caused problems in agent upload, packaging and handoff workflows. The only deliberate exception is GitHub Actions under `.github/workflows/`. The installable Skill therefore lives directly at `src/bananame/SKILL.md`, while `skill/SKILL.md` remains the repository-facing mirror.
+BananaMe intentionally keeps **its own release repository** shallow. Ordinary BananaMe project files stay at a maximum directory depth of two because deeper artifact layouts have repeatedly caused problems in agent upload, packaging and handoff workflows. The only deliberate exception is GitHub Actions under `.github/workflows/`. This is **not a restriction on target repositories**: BananaMe accepts arbitrarily deep workspace-relative paths such as `src/main/java/com/company/product/auth/AuthService.java`.
 
 ---
 
@@ -113,15 +113,15 @@ BananaMe verifies repository is still S
 only then may mutation begin
 ```
 
-If Git HEAD moved, BananaMe returns `STALE_HEAD`.
+If the optional strict Git HEAD guard was requested and HEAD moved, BananaMe returns `STALE_HEAD`.
 
-If a target file changed since observation, BananaMe returns `STALE_FILE`.
+If an actual target file changed since observation, BananaMe returns `STALE_FILE`. v0.1.1 revalidates target hashes inside a short commit-phase lock and again immediately before each write. Unrelated repository changes therefore do not block normal target-scoped mutation.
 
-The correct recovery is a new observation, not a fuzzy guess.
+The correct recovery from changed target state is a new observation, not a fuzzy guess.
 
 ### 2. Exact edits instead of full-file regeneration
 
-BananaMe v0.1 uses exact SEARCH/REPLACE blocks as the mutation primitive.
+BananaMe v0.1.1 keeps exact SEARCH/REPLACE blocks as the deterministic baseline mutation primitive.
 
 ```json
 {
@@ -142,37 +142,55 @@ Matching is fail-closed:
 
 BananaMe does not fall back to approximate/fuzzy replacement when the repository contradicts the agent's assumption.
 
-### 3. Preflight the complete transaction before writing
+### 3. Preflight against one snapshot, then validate again at commit
 
 A multi-file change is not processed as a sequence of unrelated writes.
 
-BananaMe first:
+BananaMe first resolves every same-file edit against the **same original snapshot**. Non-overlapping spans are then applied from the end of the file backwards, so the result does not depend on edit ordering. Overlaps fail with `EDIT_OVERLAP`.
 
 ```text
 resolve all workspace paths
         ↓
-validate expected Git HEAD
+optional strict HEAD validation
         ↓
-validate every expected file hash
+validate every expected target hash
         ↓
-resolve every SEARCH block uniquely
+resolve all edit spans against original snapshots
         ↓
-build every resulting file in memory
+reject overlaps / build all post-images in memory
         ↓
-run syntax preflight on every changed file
+syntax preflight
         ↓
-create transaction evidence + backups
+short mutation lock
         ↓
-write files
+revalidate every target hash
+        ↓
+persist recovery journal + before-images
+        ↓
+final hash compare immediately before each write
+        ↓
+atomic per-file replacement + progress journal
 ```
 
-If any edit fails during the preflight, **no source file is written**.
+If any edit fails before the write phase, **no source file is written**. Handled write failures trigger ownership-aware rollback. A hard process/OS interruption is handled later through the persisted journal.
 
-If an unexpected error occurs during the write phase, already-written files are restored from the transaction snapshot before the operation returns failure.
+This is crash-recoverable application-level mutation, **not** a claim of filesystem-wide ACID semantics or serializability against arbitrary non-cooperating editors.
 
-This is application-level transactional mutation, not a claim of filesystem-wide ACID semantics.
+### 4. Recover interrupted write phases instead of pretending `os.replace` is multi-file ACID
 
-### 4. Preserve the repository instead of normalizing it
+v0.1.1 turns the transaction manifest into a write-ahead recovery journal. Before the first source write, BananaMe persists before-images, intended after-hashes and a `PREPARED`/`APPLYING` state. Per-file progress is journaled as writes complete.
+
+If BananaMe restarts and finds an incomplete transaction, a new mutation is blocked with `RECOVERY_REQUIRED` until the transaction is reconciled. `mutate(action="recover")` classifies each target by checksum:
+
+```text
+current == before_hash  → not yet applied / already restored
+current == after_hash   → BananaMe post-image present
+anything else           → RECOVERY_CONFLICT; touch nothing
+```
+
+Mixed known states roll back to the captured before-images. If every target already matches its intended post-image, recovery records `APPLIED_RECOVERED`. Unknown bytes are never overwritten automatically.
+
+### 5. Preserve the repository instead of normalizing it
 
 A surgical edit should not create an unrelated full-file diff.
 
@@ -180,7 +198,7 @@ BananaMe therefore records the file's newline convention and adapts replacement 
 
 The original file mode is also preserved during atomic replacement.
 
-### 5. Make every mutation inspectable
+### 6. Make every mutation inspectable
 
 Every successful mutation receives a transaction ID and a local evidence directory:
 
@@ -208,7 +226,7 @@ transaction status
 
 A caller therefore receives more than "edit succeeded". It receives a reproducible description of what BananaMe believed it changed.
 
-### 6. Roll back without erasing later work
+### 7. Roll back without erasing later work
 
 Traditional `git checkout -- file` rollback is unsafe for an AI tool because it can destroy unrelated uncommitted changes.
 
@@ -223,7 +241,7 @@ NO  → ROLLBACK_CONFLICT; do not touch the file
 
 This means a later edit by a user or another agent is protected from a stale rollback request.
 
-### 7. Verification is separate from mutation
+### 8. Verification is separate from mutation
 
 `mutate()` can prove that a guarded change was applied. It cannot prove the change is correct.
 
@@ -266,7 +284,7 @@ BananaMe exposes only three semantic operations to an agent:
 
 Read-only repository intelligence.
 
-Typical input:
+Typical Python/CLI-shaped input:
 
 ```json
 {
@@ -278,18 +296,17 @@ Typical input:
 }
 ```
 
-The response contains the current revision/state, ranked locations, guarded file evidence, symbol information where available and bounded Git-history hints.
+MCP omits `workspace_root`; the host binds it with `BANANAME_WORKSPACE_ROOT`. The response contains current revision/state, ranked locations, guarded exact/hot-file evidence, symbol information where available, bounded Git-history hints and explicit completeness/truncation metadata.
 
 ### `mutate`
 
 Guarded transactional mutation.
 
-Typical input:
+Typical Python/CLI-shaped input:
 
 ```json
 {
   "workspace_root": "/repo",
-  "expected_head": "<git-head-from-understand>",
   "edits": [
     {
       "path": "src/auth.py",
@@ -301,13 +318,13 @@ Typical input:
 }
 ```
 
-The response contains the transaction ID, changed files, before/after hashes, syntax-preflight results and unified diff.
+`expected_head` may be added when strict whole-repository revision stability is required; it is not needed for normal target-scoped mutation. MCP again uses the host-bound workspace. The response contains the transaction ID, changed files, before/after hashes, syntax-preflight results, concurrency evidence and unified diff.
 
 ### `verify`
 
 Machine-readable validation evidence.
 
-Typical input:
+Typical Python/CLI-shaped input:
 
 ```json
 {
@@ -320,7 +337,7 @@ Typical input:
 }
 ```
 
-The response reports syntax checks, command exit codes, bounded output and a final `VERIFIED` or `VERIFICATION_FAILED` status.
+The response reports syntax checks, command exit codes, bounded output and one of four evidence states: `VERIFIED`, `PARTIAL`, `NOT_VERIFIED`, or `VERIFICATION_FAILED`. Only `VERIFIED` maps to `ok=true`.
 
 ---
 
@@ -415,7 +432,7 @@ The project therefore treats existing systems as specialized donors/prior art ra
 | Incremental indexing | Continue, Entire Graph | content-addressed per-file invalidation rather than full rebuilds |
 | Verification | native language/runtime tools | structured evidence, never automatic promotion authority |
 
-v0.1.0 does **not vendor donor source code**. The core implementation is small and dependency-free. `THIRD_PARTY_NOTICES.md` records the relevant prior art and licensing context.
+v0.1.1 does **not vendor donor source code**. The core implementation is small and dependency-free. `THIRD_PARTY_NOTICES.md` records the relevant prior art and licensing context.
 
 See [Donor Map](docs/donor-map.md) for the planned composition boundary.
 
@@ -460,12 +477,12 @@ MUTATION != VERIFICATION
 VERIFICATION != PROMOTION
 APPLIED != CORRECT
 EXIT_0 != OWNER_ACCEPTANCE
-STALE STATE MUST BE RE-OBSERVED
+CHANGED MUTATION TARGETS MUST BE RE-OBSERVED
 AMBIGUITY MUST FAIL CLOSED
 ROLLBACK MUST NOT ERASE LATER WORK
 ```
 
-Additional v0.1 boundaries:
+Additional v0.1.1 boundaries:
 
 - only workspace-relative paths are accepted;
 - path traversal outside the selected workspace is rejected;
@@ -482,7 +499,7 @@ See [SECURITY.md](SECURITY.md) for the current trust boundary.
 
 ## Current limitations
 
-v0.1.0 freezes the machine protocol and safe mutation boundary before adding heavier repository intelligence.
+v0.1.1 hardens the frozen machine protocol before the structural-intelligence milestone.
 
 Current limitations are explicit:
 
@@ -493,7 +510,9 @@ Current limitations are explicit:
 - semantic diff and impact neighborhoods are not yet exposed;
 - `ast-grep` is not yet a runtime dependency;
 - BananaMe does not automatically infer the optimal test command;
-- no benchmark superiority claim over Aider, AFT, SWE-agent or other systems is made by v0.1.0.
+- the short BananaMe mutation lock coordinates BananaMe writers, but cannot force arbitrary external editors to honor it;
+- exact SEARCH/REPLACE remains the baseline selector; symbol-/AST-addressed mutation is planned for v0.2;
+- no benchmark superiority claim over Aider, AFT, SWE-agent or other systems is made by v0.1.1.
 
 These are expansion points behind the existing `understand` and `verify` contracts, not reasons to add more public tools.
 
@@ -504,8 +523,8 @@ These are expansion points behind the existing `understand` and `verify` contrac
 The intended internal progression is:
 
 ```text
-v0.1
-guarded state + bounded localization + transactional editing + verification
+v0.1.1
+target-scoped optimistic validation + crash recovery + explicit evidence states
 
         ↓
 
@@ -578,15 +597,16 @@ bananame --workspace /repo understand \
   --query "session expiry authentication"
 ```
 
-Use the returned `head` and file SHA-256 values to build guarded edits.
+Use the returned target-file SHA-256 values to build guarded edits. Inspect completeness/truncation flags before claiming repository-wide coverage. `head_revision` is available when a strict whole-repository guard is required.
 
-Apply a mutation:
+Apply a normal target-scoped mutation:
 
 ```bash
 bananame --workspace /repo mutate \
-  --expected-head <git-sha> \
   --edits-json '<json-array>'
 ```
+
+Add `--expected-head <git-sha>` only when the whole Git revision must remain fixed.
 
 Verify the transaction:
 
@@ -601,6 +621,13 @@ Roll back while BananaMe still owns the post-edit state:
 ```bash
 bananame --workspace /repo mutate \
   --rollback <transaction-id>
+```
+
+Recover an interrupted journal:
+
+```bash
+bananame --workspace /repo mutate \
+  --recover <transaction-id>
 ```
 
 ---
@@ -624,7 +651,7 @@ mutate
 verify
 ```
 
-For HTTP-capable hosts the transport can be switched with `BANANAME_MCP_TRANSPORT`; the coding core itself remains transport-independent.
+For MCP, the host must bind the repository through `BANANAME_WORKSPACE_ROOT`; the agent-facing tools do not accept arbitrary workspace paths. For HTTP-capable hosts the transport can be switched with `BANANAME_MCP_TRANSPORT`; the coding core itself remains transport-independent.
 
 ---
 
@@ -650,6 +677,7 @@ The Skill contains procedure. The Python package contains mechanics. The MCP lay
 - [Architecture](docs/architecture.md) — current component boundaries and target evolution.
 - [AI Protocol](docs/protocol.md) — operation semantics and machine-visible failure states.
 - [Donor Map](docs/donor-map.md) — what is reused conceptually and where BananaMe adds its own delta.
+- [Research Basis](docs/research-basis.md) — scientific basis for optimistic validation, crash recovery, compact agent interfaces and the planned structural-intelligence layer.
 - [Security](SECURITY.md) — workspace, mutation and command-execution boundaries.
 - [Third-party notices](THIRD_PARTY_NOTICES.md) — prior art and dependency/license notes.
 
@@ -657,8 +685,8 @@ The Skill contains procedure. The Python package contains mechanics. The MCP lay
 
 ## Status
 
-BananaMe v0.1.0 is an **experimental alpha foundation**.
+BananaMe v0.1.1 is an **experimental alpha hardening release**.
 
-The safe mutation path, transaction evidence, rollback semantics, verification separation and three-operation AI interface are implemented. Repository intelligence is deliberately conservative in this release and will be expanded behind the existing interface.
+The safe mutation path now includes target-scoped revalidation, overlap-safe same-file edit planning, a short cross-process commit/recovery lock, durable recovery journals, explicit recovery, completeness metadata and four-state verification evidence. Repository intelligence remains deliberately conservative and will be expanded behind the existing interface.
 
 The project does not currently claim to outperform Aider or other coding agents. That claim, if it is ever made, must be earned through controlled evaluation of localization quality, context cost, mutation reliability, verification outcomes and wall-clock overhead.

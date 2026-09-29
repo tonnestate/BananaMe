@@ -8,7 +8,7 @@ It gives an external agent three operations:
 understand → mutate → verify
 ```
 
-BananaMe does not plan the task and does not decide whether a change should be accepted. Its job is narrower: provide bounded repository evidence, apply guarded code changes, and return machine-readable verification evidence.
+BananaMe does not plan the task and does not decide whether a change should be accepted. Its job is narrower: provide bounded repository evidence, apply guarded/recoverable code changes, and return machine-readable verification evidence.
 
 ## Mental model
 
@@ -17,18 +17,18 @@ Agent reasoning
       │
       ▼
 UNDERSTAND
-observe the current repository state
+observe current target state + completeness flags
       │
       ▼
 Agent proposes exact edits
       │
       ▼
 MUTATE
-validate guards, preflight every edit, write transactionally
+preflight → short lock → revalidate → journal → write
       │
       ▼
 VERIFY
-syntax + explicit tests/linters
+syntax + explicit tests/linters + evidence state
       │
       ▼
 Host/governance decides what happens next
@@ -42,7 +42,9 @@ Host/governance decides what happens next
 bananame --workspace . understand --query "authentication token expiry"
 ```
 
-Use the returned Git HEAD and target-file SHA-256 values. Do not invent or reuse stale hashes.
+Use the returned target-file SHA-256 values. Inspect `inventory_truncated`, `search_truncated`, `context_truncated`, and `truncation_reasons` before treating the result as complete.
+
+`head_revision` is also returned, but the repository-wide HEAD guard is optional. Use it only when the task requires the whole Git revision to stay fixed.
 
 ### 2. Mutate
 
@@ -59,7 +61,14 @@ Create exact SEARCH/REPLACE edits using the state you just observed.
 ]
 ```
 
-Then apply them against the observed HEAD:
+Target-scoped mutation (normal mode):
+
+```bash
+bananame --workspace . mutate \
+  --edits-json '<json-array>'
+```
+
+Strict whole-repository guard when required:
 
 ```bash
 bananame --workspace . mutate \
@@ -67,7 +76,7 @@ bananame --workspace . mutate \
   --edits-json '<json-array>'
 ```
 
-BananaMe resolves every proposed edit before writing. A missing, ambiguous or stale target fails closed.
+BananaMe resolves every proposed edit against the same original file snapshot, rejects overlaps, acquires a short commit-phase lock, revalidates target hashes, journals recovery state, and only then writes.
 
 ### 3. Verify
 
@@ -77,31 +86,50 @@ bananame --workspace . verify \
   --command-json '["python","-m","pytest","-q"]'
 ```
 
-`VERIFIED` means the selected checks passed. It is not a Git commit, deployment approval or business acceptance.
-
-## What happens on failure?
-
-The common recoverable failures are intentional control signals:
+Interpret the status literally:
 
 ```text
-STALE_HEAD         → repository revision changed; observe again
-STALE_FILE         → file changed; observe again
-SEARCH_NOT_FOUND   → assumption does not match current source
-SEARCH_AMBIGUOUS   → proposed target is not unique
-SYNTAX_PREFLIGHT_FAILED → proposed result is syntactically invalid
-ROLLBACK_CONFLICT  → later work exists; rollback is refused
+VERIFIED             requested concrete checks passed
+PARTIAL              some evidence exists but selected paths remain unchecked
+NOT_VERIFIED         no concrete check executed
+VERIFICATION_FAILED  at least one concrete check failed
 ```
 
-The expected response to stale or contradictory state is renewed observation, not guesswork.
+Only `VERIFIED` produces `ok=true`. None of these states is a Git commit, deployment approval or business acceptance.
+
+## Interrupted mutation recovery
+
+v0.1.1 journals before/after hashes and per-file progress before source writes. If a previous process died during the write phase, a new mutation returns `RECOVERY_REQUIRED` until the transaction is reconciled.
+
+```bash
+bananame --workspace . mutate --recover <transaction-id>
+```
+
+Recovery never guesses. A file must match either the journaled before-image or intended after-image. Anything else yields `RECOVERY_CONFLICT` and remains untouched.
+
+## Common control signals
+
+```text
+STALE_HEAD              → optional strict HEAD guard failed
+STALE_FILE              → target bytes changed; observe again
+MUTATION_BUSY            → another BananaMe commit/recovery phase owns the short lock
+SEARCH_NOT_FOUND         → assumption does not match observed source
+SEARCH_AMBIGUOUS         → proposed target is not unique
+EDIT_OVERLAP             → same-file proposed spans overlap
+SYNTAX_PREFLIGHT_FAILED  → proposed result is syntactically invalid
+RECOVERY_REQUIRED        → reconcile an interrupted transaction first
+RECOVERY_CONFLICT        → current bytes match neither journaled before nor after state
+ROLLBACK_CONFLICT        → later work exists; rollback is refused
+```
+
+## Deep target paths are supported
+
+The shallow-layout convention documented for BananaMe applies only to BananaMe's own release repository. Target repositories may be arbitrarily deep, for example:
+
+```text
+src/main/java/com/company/product/auth/AuthService.java
+```
 
 ## Where state is stored
 
-BananaMe stores only local transaction evidence under:
-
-```text
-.bananame/transactions/<transaction-id>/
-```
-
-This includes the manifest, before-images and unified diff needed for inspectable rollback behavior.
-
-BananaMe has no long-term agent memory. Persistent workflow state belongs to the host or a separate system such as MangoMe.
+BananaMe stores only local transaction/lock evidence under `.bananame/`. This is not long-term agent memory. Persistent workflow state belongs to the host or a separate system such as MangoMe.

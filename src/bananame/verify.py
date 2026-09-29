@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import shutil
 import subprocess
-import tempfile
 import tomllib
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -32,7 +30,7 @@ def syntax_check_text(path: str, text: str) -> dict[str, Any]:
             return {"path": path, "status": "PASS", "checker": "xml.etree"}
     except Exception as exc:
         return {"path": path, "status": "FAIL", "checker": "builtin", "error": str(exc)}
-    return {"path": path, "status": "SKIP", "checker": "none"}
+    return {"path": path, "status": "SKIP", "checker": "none", "reason": "NO_CHECKER_AVAILABLE"}
 
 
 def _external_syntax(ws: Workspace, path: str) -> dict[str, Any] | None:
@@ -109,33 +107,62 @@ def verify(
                 check=False,
                 env=env,
             )
-            command_results.append({
-                "argv": command,
-                "status": "PASS" if result.returncode == 0 else "FAIL",
-                "exit_code": result.returncode,
-                "stdout": result.stdout[-12000:],
-                "stderr": result.stderr[-12000:],
-            })
+            command_results.append(
+                {
+                    "argv": command,
+                    "status": "PASS" if result.returncode == 0 else "FAIL",
+                    "exit_code": result.returncode,
+                    "stdout": result.stdout[-12000:],
+                    "stderr": result.stderr[-12000:],
+                }
+            )
         except subprocess.TimeoutExpired as exc:
-            command_results.append({
-                "argv": command,
-                "status": "FAIL",
-                "error": "TIMEOUT",
-                "timeout_seconds": timeout_seconds,
-                "stdout": (exc.stdout or "")[-4000:] if isinstance(exc.stdout, str) else "",
-                "stderr": (exc.stderr or "")[-4000:] if isinstance(exc.stderr, str) else "",
-            })
+            command_results.append(
+                {
+                    "argv": command,
+                    "status": "FAIL",
+                    "error": "TIMEOUT",
+                    "timeout_seconds": timeout_seconds,
+                    "stdout": (exc.stdout or "")[-4000:] if isinstance(exc.stdout, str) else "",
+                    "stderr": (exc.stderr or "")[-4000:] if isinstance(exc.stderr, str) else "",
+                }
+            )
 
-    failures = [item for item in syntax if item.get("status") == "FAIL"] + [
-        item for item in command_results if item.get("status") == "FAIL"
-    ]
+    syntax_passed = sum(1 for item in syntax if item.get("status") == "PASS")
+    syntax_failed = sum(1 for item in syntax if item.get("status") == "FAIL")
+    syntax_skipped = sum(1 for item in syntax if item.get("status") == "SKIP")
+    commands_passed = sum(1 for item in command_results if item.get("status") == "PASS")
+    commands_failed = sum(1 for item in command_results if item.get("status") == "FAIL")
+    checks_executed = syntax_passed + syntax_failed + commands_passed + commands_failed
+    failure_count = syntax_failed + commands_failed
+
+    if failure_count:
+        status = "VERIFICATION_FAILED"
+    elif checks_executed == 0:
+        status = "NOT_VERIFIED"
+    elif syntax_skipped:
+        status = "PARTIAL"
+    else:
+        status = "VERIFIED"
+
     return {
-        "ok": not failures,
+        "ok": status == "VERIFIED",
+        "execution_ok": True,
         "operation": "verify",
         "transaction_id": transaction_id,
         "paths": selected,
         "syntax": syntax,
         "commands": command_results,
-        "status": "VERIFIED" if not failures else "VERIFICATION_FAILED",
-        "failure_count": len(failures),
+        "status": status,
+        "failure_count": failure_count,
+        "evidence": {
+            "checks_executed": checks_executed,
+            "syntax_passed": syntax_passed,
+            "syntax_failed": syntax_failed,
+            "syntax_skipped": syntax_skipped,
+            "commands_passed": commands_passed,
+            "commands_failed": commands_failed,
+            "syntax_coverage_complete": bool(selected) and syntax_skipped == 0,
+            "complete_for_requested_checks": status == "VERIFIED",
+        },
     }
