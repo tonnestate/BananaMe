@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "bananame-code"
 version = "0.1.0"
-description = "Headless AI-to-AI code interface: understand, mutate, verify."
+description = "Headless AI-to-AI coding substrate for bounded repository understanding, guarded transactional mutation, and machine-verifiable evidence."
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
@@ -44,6 +44,9 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["bananame*"]
+
+[tool.setuptools.package-data]
+bananame = ["SKILL.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,5 @@
+Delete from the existing BananaMe repository before/with this delta:
+
+assets/README.md
+
+Do not upload this instruction file into the repository.

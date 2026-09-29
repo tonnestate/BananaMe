@@ -4,6 +4,8 @@
 
 Initial BananaMe foundation.
 
+Repository hardening completed before the first public release: MangoMe-style README header/banner, complete capability and implementation description, shallow-layout invariant, packaged Skill at `src/bananame/SKILL.md`, `.gitignore`, CI, and packaging/layout tests.
+
 - established the three-operation AI-facing protocol: `understand`, `mutate`, `verify`;
 - added bounded lexical repository localization with ripgrep and deterministic fallback;
 - added Python AST symbol localization and body hashes;

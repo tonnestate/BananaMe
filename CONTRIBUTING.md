@@ -18,6 +18,7 @@ Core invariants:
 - verification never implies commit, deployment, acceptance or independent assurance;
 - repository writes must remain workspace-confined and transactionally recoverable;
 - machine-readable evidence is preferred over prose-only output.
+- package/repository layout stays shallow: no ordinary project file should live deeper than two directories; `.github/workflows/` is the GitHub Actions exception.
 
 Before opening a pull request, run:
 
