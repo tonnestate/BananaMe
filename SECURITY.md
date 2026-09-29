@@ -2,7 +2,7 @@
 
 BananaMe executes against a caller-selected local workspace and therefore treats repository content as untrusted input.
 
-## v0.1.1 protections
+## v0.1.2 protections
 
 - workspace-relative paths only;
 - resolved paths must remain beneath the workspace root;
@@ -21,6 +21,7 @@ BananaMe executes against a caller-selected local workspace and therefore treats
 - recovery refuses to overwrite bytes that match neither the journaled before nor intended after state;
 - rollback refuses to erase changes made after the transaction;
 - verification commands use argv arrays and never `shell=True`;
+- optional Hypothesis/CrossHair verification is explicit and bounded; BananaMe never auto-generates properties or automatically starts symbolic execution;
 - MCP workspaces are host-bound through `BANANAME_WORKSPACE_ROOT` instead of being agent-selected per tool call;
 - Git commit, deployment and external promotion are out of scope.
 
@@ -28,4 +29,4 @@ BananaMe executes against a caller-selected local workspace and therefore treats
 
 BananaMe does not claim a complete sandbox, filesystem-wide ACID semantics, or serializability against arbitrary external processes. The mutation lock coordinates BananaMe writers only. A non-cooperating editor can still race with BananaMe in a narrow interval; target-hash checks and recovery are designed to detect/refuse conflicting state rather than silently merge it.
 
-Explicit verification commands run with the invoking process's operating-system privileges. A host requiring stronger isolation should run BananaMe inside its own sandbox/container policy.
+Explicit verification commands and optional verifier providers run with the invoking process's operating-system privileges. CrossHair actually executes analyzed Python code with symbolic values; repository code with side effects therefore requires the same or stronger sandbox policy as tests. BananaMe does not pass CrossHair `--unblock` automatically. A host requiring stronger isolation should run BananaMe inside its own sandbox/container policy.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bananame-code"
-version = "0.1.1"
+version = "0.1.2"
 description = "Headless AI-to-AI coding substrate for bounded repository understanding, guarded transactional mutation, and machine-verifiable evidence."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -28,7 +28,10 @@ dependencies = []
 
 [project.optional-dependencies]
 mcp = ["mcp>=2,<3"]
-dev = ["pytest>=8.0", "pytest-cov>=5.0"]
+hypothesis = ["hypothesis>=6,<7", "pytest>=8,<9"]
+crosshair = ["crosshair-tool>=0.0.100,<0.1"]
+verification = ["hypothesis>=6,<7", "pytest>=8,<9", "crosshair-tool>=0.0.100,<0.1"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "hypothesis>=6,<7"]
 
 [project.scripts]
 bananame = "bananame.cli:main"

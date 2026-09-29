@@ -1,0 +1,191 @@
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import tomllib
+import xml.etree.ElementTree as ET
+from pathlib import Path
+from typing import Any
+
+from .errors import BananaMeError
+from .verifiers import run_verifier_checks, verification_capabilities
+from .workspace import Workspace
+
+
+def syntax_check_text(path: str, text: str) -> dict[str, Any]:
+    suffix = Path(path).suffix.lower()
+    try:
+        if suffix == ".py":
+            compile(text, path, "exec")
+            return {"path": path, "status": "PASS", "checker": "python.compile"}
+        if suffix == ".json":
+            json.loads(text)
+            return {"path": path, "status": "PASS", "checker": "json.loads"}
+        if suffix == ".toml":
+            tomllib.loads(text)
+            return {"path": path, "status": "PASS", "checker": "tomllib.loads"}
+        if suffix in {".xml", ".svg"}:
+            ET.fromstring(text)
+            return {"path": path, "status": "PASS", "checker": "xml.etree"}
+    except Exception as exc:
+        return {"path": path, "status": "FAIL", "checker": "builtin", "error": str(exc)}
+    return {"path": path, "status": "SKIP", "checker": "none", "reason": "NO_CHECKER_AVAILABLE"}
+
+
+def _external_syntax(ws: Workspace, path: str) -> dict[str, Any] | None:
+    suffix = Path(path).suffix.lower()
+    command: list[str] | None = None
+    checker = ""
+    if suffix in {".js", ".mjs", ".cjs"} and shutil.which("node"):
+        command, checker = ["node", "--check", path], "node --check"
+    elif suffix == ".php" and shutil.which("php"):
+        command, checker = ["php", "-l", path], "php -l"
+    elif suffix in {".sh", ".bash"} and shutil.which("bash"):
+        command, checker = ["bash", "-n", path], "bash -n"
+    if not command:
+        return None
+    result = subprocess.run(command, cwd=ws.root, capture_output=True, text=True, timeout=20, check=False)
+    return {
+        "path": path,
+        "status": "PASS" if result.returncode == 0 else "FAIL",
+        "checker": checker,
+        "exit_code": result.returncode,
+        "stdout": result.stdout[-4000:],
+        "stderr": result.stderr[-4000:],
+    }
+
+
+def _load_transaction_paths(ws: Workspace, transaction_id: str) -> list[str]:
+    manifest = ws.root / ".bananame" / "transactions" / transaction_id / "manifest.json"
+    if not manifest.is_file():
+        raise BananaMeError("TRANSACTION_NOT_FOUND", f"Unknown transaction: {transaction_id}")
+    data = json.loads(manifest.read_text("utf-8"))
+    return list(data.get("changed_files") or [])
+
+
+def verify(
+    workspace_root: str,
+    paths: list[str] | None = None,
+    transaction_id: str | None = None,
+    commands: list[list[str]] | None = None,
+    verifier_checks: list[dict[str, Any]] | None = None,
+    timeout_seconds: int = 60,
+) -> dict[str, Any]:
+    ws = Workspace(workspace_root)
+    selected = list(paths or [])
+    if transaction_id:
+        for path in _load_transaction_paths(ws, transaction_id):
+            if path not in selected:
+                selected.append(path)
+    timeout_seconds = max(1, min(int(timeout_seconds), 900))
+
+    syntax: list[dict[str, Any]] = []
+    for rel in selected:
+        snap = ws.read_text(rel)
+        built = syntax_check_text(rel, snap.text)
+        external = None if built["status"] == "FAIL" else _external_syntax(ws, rel)
+        syntax.append(external or built)
+
+    command_results: list[dict[str, Any]] = []
+    for command in commands or []:
+        if not isinstance(command, list) or not command or not all(isinstance(part, str) and part for part in command):
+            raise BananaMeError("INVALID_COMMAND", "Verification commands must be non-empty argv arrays; shell strings are not accepted.")
+        executable = shutil.which(command[0])
+        if executable is None:
+            command_results.append({"argv": command, "status": "FAIL", "error": "COMMAND_NOT_FOUND"})
+            continue
+        env = os.environ.copy()
+        env.pop("GIT_DIR", None)
+        env.pop("GIT_WORK_TREE", None)
+        try:
+            result = subprocess.run(
+                [executable, *command[1:]],
+                cwd=ws.root,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+                env=env,
+            )
+            command_results.append(
+                {
+                    "argv": command,
+                    "status": "PASS" if result.returncode == 0 else "FAIL",
+                    "exit_code": result.returncode,
+                    "stdout": result.stdout[-12000:],
+                    "stderr": result.stderr[-12000:],
+                }
+            )
+        except subprocess.TimeoutExpired as exc:
+            command_results.append(
+                {
+                    "argv": command,
+                    "status": "FAIL",
+                    "error": "TIMEOUT",
+                    "timeout_seconds": timeout_seconds,
+                    "stdout": (exc.stdout or "")[-4000:] if isinstance(exc.stdout, str) else "",
+                    "stderr": (exc.stderr or "")[-4000:] if isinstance(exc.stderr, str) else "",
+                }
+            )
+
+    verifier_results = run_verifier_checks(
+        ws,
+        verifier_checks,
+        default_timeout_seconds=timeout_seconds,
+    )
+
+    syntax_passed = sum(1 for item in syntax if item.get("status") == "PASS")
+    syntax_failed = sum(1 for item in syntax if item.get("status") == "FAIL")
+    syntax_skipped = sum(1 for item in syntax if item.get("status") == "SKIP")
+    commands_passed = sum(1 for item in command_results if item.get("status") == "PASS")
+    commands_failed = sum(1 for item in command_results if item.get("status") == "FAIL")
+    verifier_passed = sum(1 for item in verifier_results if item.get("outcome") == "PASSED")
+    verifier_falsified = sum(1 for item in verifier_results if item.get("outcome") == "FALSIFIED")
+    verifier_incomplete = sum(
+        1
+        for item in verifier_results
+        if item.get("outcome") in {"INCONCLUSIVE", "ERROR", "TIMEOUT", "NOT_AVAILABLE"}
+    )
+    verifier_executed = sum(1 for item in verifier_results if item.get("executed"))
+
+    checks_executed = syntax_passed + syntax_failed + commands_passed + commands_failed + verifier_executed
+    failure_count = syntax_failed + commands_failed + verifier_falsified
+
+    if failure_count:
+        status = "VERIFICATION_FAILED"
+    elif checks_executed == 0:
+        status = "NOT_VERIFIED"
+    elif syntax_skipped or verifier_incomplete:
+        status = "PARTIAL"
+    else:
+        status = "VERIFIED"
+
+    return {
+        "ok": status == "VERIFIED",
+        "execution_ok": True,
+        "operation": "verify",
+        "transaction_id": transaction_id,
+        "paths": selected,
+        "syntax": syntax,
+        "commands": command_results,
+        "verifier_checks": verifier_results,
+        "verification_capabilities": verification_capabilities(),
+        "status": status,
+        "failure_count": failure_count,
+        "evidence": {
+            "checks_executed": checks_executed,
+            "syntax_passed": syntax_passed,
+            "syntax_failed": syntax_failed,
+            "syntax_skipped": syntax_skipped,
+            "commands_passed": commands_passed,
+            "commands_failed": commands_failed,
+            "verifier_passed": verifier_passed,
+            "verifier_falsified": verifier_falsified,
+            "verifier_incomplete": verifier_incomplete,
+            "verifier_executed": verifier_executed,
+            "syntax_coverage_complete": bool(selected) and syntax_skipped == 0,
+            "complete_for_requested_checks": status == "VERIFIED",
+        },
+    }

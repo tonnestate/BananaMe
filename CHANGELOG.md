@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.2 — 2026-09-29
+
+Composable falsification without runtime-core bloat.
+
+- kept the public AI-facing surface at exactly `understand`, `mutate`, `verify`;
+- added a small optional verifier-provider layer behind `verify`;
+- added explicit Hypothesis execution for caller-selected existing property tests;
+- added explicit CrossHair contract/assertion checking with bounded time budgets;
+- added verifier outcomes `PASSED`, `FALSIFIED`, `INCONCLUSIVE`, `ERROR`, `TIMEOUT`, and `NOT_AVAILABLE`;
+- preserve property provenance as `PROJECT_EXISTING`, `OWNER_SUPPLIED`, `SPEC_DERIVED`, `AGENT_GENERATED`, or `UNKNOWN`;
+- report optional verifier capability discovery without importing heavy verification stacks into the runtime core;
+- do not auto-generate properties, do not auto-run symbolic execution, and do not treat no-counterexample results as proof;
+- added optional `hypothesis`, `crosshair`, and `verification` extras while keeping mandatory runtime dependencies empty;
+- added Hypothesis-based property tests against BananaMe's own newline and edit-order invariants.
+- fixed Codex/Agent Plugin discovery by adding the standard `skills/bananame/SKILL.md` path and a portable root `plugin.json`; retained the existing Skill paths as byte-identical compatibility/package mirrors.
+
 ## 0.1.1 — 2026-09-29
 
 Trust, concurrency and crash-recovery hardening over the published v0.1.0 base.

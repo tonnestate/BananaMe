@@ -12,7 +12,7 @@
 <p align="center">
   <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue">
   <img alt="Status" src="https://img.shields.io/badge/status-experimental-orange">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.1.1-yellow">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.1.2-yellow">
   <img alt="Python" src="https://img.shields.io/badge/python-%3E%3D3.10-3776AB">
   <img alt="MCP" src="https://img.shields.io/badge/MCP-optional-5b5bd6">
   <img alt="Agent Skill" src="https://img.shields.io/badge/agent-skill-purple">
@@ -47,15 +47,15 @@ The host remains responsible for reasoning and authority. BananaMe is the determ
 
 > **Agents decide. BananaMe observes, mutates and verifies repository state.**
 
-BananaMe is independent and any model/provider. MangoMe may govern BananaMe. SPARI may decide what should be reused or built. Neither is required to run BananaMe.
+BananaMe is independent of MangoMe, SPARI, AVCOS and any model/provider. MangoMe may govern BananaMe. SPARI may decide what should be reused or built. Neither is required to run BananaMe.
 
 ---
 
-## What BananaMe v0.1.1 can do today
+## What BananaMe v0.1.2 can do today
 
-v0.1.1 hardens the first usable repository-understanding, mutation and verification path around concurrency, crash recovery and explicit evidence completeness. The public interface remains exactly `understand → mutate → verify`.
+v0.1.2 keeps the v0.1.1 concurrency/recovery guarantees and adds a deliberately small composable-falsification layer behind `verify`. The public interface remains exactly `understand → mutate → verify`.
 
-| Capability | v0.1.1 behavior |
+| Capability | v0.1.2 behavior |
 |---|---|
 | Repository observation | Reads Git HEAD, dirty state and repository inventory without modifying source files. |
 | Bounded localization | Uses `ripgrep` when available and a deterministic Python fallback otherwise. Results are ranked and bounded by a context budget. |
@@ -73,11 +73,15 @@ v0.1.1 hardens the first usable repository-understanding, mutation and verificat
 | Recoverable transaction journal | Persists before-images, intended after-hashes, per-file progress and a unified diff before source mutation, enabling explicit recovery after process interruption. |
 | Safe rollback | Restores a transaction only if the files still contain the exact post-transaction hashes. Later human/agent work is never overwritten silently. |
 | Verification truth states | Separates `VERIFIED`, `PARTIAL`, `NOT_VERIFIED` and `VERIFICATION_FAILED` so missing checker coverage cannot be reported as success. |
+| Optional Hypothesis verifier | Runs an explicitly selected existing property test through pytest when Hypothesis is installed; never generates properties automatically. |
+| Optional CrossHair verifier | Runs an explicitly selected CrossHair target with a bounded time budget and normalizes counterexample/no-counterexample/error outcomes. |
+| Verifier provenance | Preserves whether a property/check is `PROJECT_EXISTING`, `OWNER_SUPPLIED`, `SPEC_DERIVED`, `AGENT_GENERATED`, or `UNKNOWN`. |
+| Capability discovery | Reports whether pytest, Hypothesis and CrossHair are available without making them mandatory runtime dependencies. |
 | Additional syntax tools | Uses `node --check`, `php -l` and `bash -n` when those runtimes exist. |
 | Machine protocol | CLI, Python API, Agent Skill and optional MCP server all call the same core implementation. MCP binds its workspace on the host side instead of accepting an arbitrary agent-supplied root. |
 | No automatic promotion | BananaMe never commits, deploys, approves or converts a passing test into an acceptance decision. |
 
-The core package still has **no mandatory third-party runtime dependencies** in v0.1.1. MCP support is an optional extra. Structural/graph providers are intentionally deferred rather than hidden inside the core.
+The core package still has **no mandatory third-party runtime dependencies** in v0.1.2. MCP, Hypothesis and CrossHair are optional extras. Structural/graph providers are intentionally deferred rather than hidden inside the core.
 
 ### Repository/layout invariant
 
@@ -252,8 +256,11 @@ This means a later edit by a user or another agent is protected from a stale rol
 - compile/parse Python, JSON, TOML and XML/SVG;
 - invoke `node --check`, `php -l` or `bash -n` when available;
 - execute caller-selected tests or linters as explicit argv arrays;
-- enforce bounded command timeouts;
-- return bounded stdout/stderr and exit codes as structured evidence.
+- optionally execute an explicitly selected Hypothesis property test when Hypothesis is installed;
+- optionally execute an explicitly selected CrossHair target when CrossHair is installed;
+- preserve verifier provenance and uncertainty;
+- enforce bounded command/verifier timeouts;
+- return bounded stdout/stderr and normalized evidence.
 
 Verification commands are passed as arrays such as:
 
@@ -262,6 +269,19 @@ Verification commands are passed as arrays such as:
 ```
 
 BananaMe intentionally rejects shell command strings. It does not invoke them with `shell=True`.
+
+Optional verifier checks are explicitly requested. BananaMe does **not** synthesize properties and does **not** automatically start symbolic execution. Individual optional-provider outcomes are normalized as:
+
+```text
+PASSED
+FALSIFIED
+INCONCLUSIVE
+ERROR
+TIMEOUT
+NOT_AVAILABLE
+```
+
+For CrossHair, `PASSED` means **no counterexample was found within the configured analysis budget**. It is not promoted to a universal correctness proof. `FALSIFIED` is negative evidence; inconclusive/error/timeout/not-available outcomes preserve uncertainty and therefore cannot make an otherwise incomplete run `VERIFIED`.
 
 And even a successful verification remains only evidence:
 
@@ -333,11 +353,25 @@ Typical Python/CLI-shaped input:
   "commands": [
     ["python", "-m", "pytest", "-q"]
   ],
+  "verifier_checks": [
+    {
+      "provider": "hypothesis",
+      "target": "tests/test_auth.py::test_roundtrip",
+      "origin": "PROJECT_EXISTING"
+    },
+    {
+      "provider": "crosshair",
+      "target": "src/app/auth.py:validate_token",
+      "analysis_kind": "asserts",
+      "origin": "SPEC_DERIVED",
+      "timeout_seconds": 10
+    }
+  ],
   "timeout_seconds": 60
 }
 ```
 
-The response reports syntax checks, command exit codes, bounded output and one of four evidence states: `VERIFIED`, `PARTIAL`, `NOT_VERIFIED`, or `VERIFICATION_FAILED`. Only `VERIFIED` maps to `ok=true`.
+The response reports syntax checks, command exit codes, optional-verifier evidence/capabilities, bounded output and one of four top-level evidence states: `VERIFIED`, `PARTIAL`, `NOT_VERIFIED`, or `VERIFICATION_FAILED`. Only `VERIFIED` maps to `ok=true`.
 
 ---
 
@@ -365,9 +399,9 @@ The response reports syntax checks, command exit codes, bounded output and one o
      inventory         SHA guards         diagnostics
      lexical search    HEAD guard         argv tests
      Python AST        full preflight     timeout
-     body hashes       atomic writes      evidence
-     co-change         tx manifest
-     context budget    safe rollback
+     body hashes       atomic writes      optional PBT/SMT
+     co-change         tx manifest        provenance
+     context budget    safe rollback      evidence
           │                 │                 │
           └─────────────────┼─────────────────┘
                             │
@@ -430,9 +464,9 @@ The project therefore treats existing systems as specialized donors/prior art ra
 | Repository graph | Entire Graph, RepoGraph, LocAgent | future symbol/relation/impact graph rather than whole-repo text dumps |
 | Agent-computer interface | SWE-agent | small machine-oriented surface and immediate deterministic feedback |
 | Incremental indexing | Continue, Entire Graph | content-addressed per-file invalidation rather than full rebuilds |
-| Verification | native language/runtime tools | structured evidence, never automatic promotion authority |
+| Verification | native language/runtime tools, Hypothesis, CrossHair | structured falsification evidence, never automatic promotion authority |
 
-v0.1.1 does **not vendor donor source code**. The core implementation is small and dependency-free. `THIRD_PARTY_NOTICES.md` records the relevant prior art and licensing context.
+v0.1.2 does **not vendor donor source code**. The core implementation is small and dependency-free. `THIRD_PARTY_NOTICES.md` records the relevant prior art and licensing context.
 
 See [Donor Map](docs/donor-map.md) for the planned composition boundary.
 
@@ -482,7 +516,7 @@ AMBIGUITY MUST FAIL CLOSED
 ROLLBACK MUST NOT ERASE LATER WORK
 ```
 
-Additional v0.1.1 boundaries:
+Additional v0.1.2 boundaries:
 
 - only workspace-relative paths are accepted;
 - path traversal outside the selected workspace is rejected;
@@ -499,7 +533,7 @@ See [SECURITY.md](SECURITY.md) for the current trust boundary.
 
 ## Current limitations
 
-v0.1.1 hardens the frozen machine protocol before the structural-intelligence milestone.
+v0.1.2 keeps the frozen machine protocol and adds optional composable falsification before the structural-intelligence milestone.
 
 Current limitations are explicit:
 
@@ -509,6 +543,7 @@ Current limitations are explicit:
 - content-addressed per-file parse caching is not yet implemented;
 - semantic diff and impact neighborhoods are not yet exposed;
 - `ast-grep` is not yet a runtime dependency;
+- optional Hypothesis/CrossHair providers are Python-focused and execute only explicit caller-selected targets;
 - BananaMe does not automatically infer the optimal test command;
 - the short BananaMe mutation lock coordinates BananaMe writers, but cannot force arbitrary external editors to honor it;
 - exact SEARCH/REPLACE remains the baseline selector; symbol-/AST-addressed mutation is planned for v0.2;
@@ -577,6 +612,24 @@ Optional MCP adapter:
 python -m pip install -e '.[mcp]'
 ```
 
+Optional property-based verification:
+
+```bash
+python -m pip install -e '.[hypothesis]'
+```
+
+Optional CrossHair verification:
+
+```bash
+python -m pip install -e '.[crosshair]'
+```
+
+Both optional verifier providers:
+
+```bash
+python -m pip install -e '.[verification]'
+```
+
 Development:
 
 ```bash
@@ -585,6 +638,24 @@ pytest
 ```
 
 Python 3.10+ is supported by the package metadata and CI currently tests Python 3.10, 3.11, 3.12 and 3.13.
+
+### Codex / Agent Plugin skill discovery
+
+For portable Agent Plugin and Codex discovery, the canonical repository skill lives at:
+
+```text
+skills/bananame/SKILL.md
+```
+
+The root `plugin.json` identifies BananaMe as a portable Agent Plugin package. `skill/SKILL.md` is retained as a compatibility mirror for existing installers, while `src/bananame/SKILL.md` is the packaged Python resource. All three Skill files are intentionally byte-identical and tested for drift.
+
+Installing the Python runtime is still explicit:
+
+```bash
+python -m pip install -e '.[mcp]'
+```
+
+For a local MCP host, bind the target repository through `BANANAME_WORKSPACE_ROOT` before starting `bananame-mcp`. BananaMe does not hard-code a machine-specific local MCP configuration into the portable plugin manifest.
 
 ---
 
@@ -614,6 +685,15 @@ Verify the transaction:
 bananame --workspace /repo verify \
   --transaction-id <transaction-id> \
   --command-json '["python","-m","pytest","-q"]'
+```
+
+Optional verifier requests use the same `verify` command:
+
+```bash
+bananame --workspace /repo verify \
+  --path src/auth.py \
+  --verifier-json '{"provider":"hypothesis","target":"tests/test_auth.py::test_roundtrip","origin":"PROJECT_EXISTING"}' \
+  --verifier-json '{"provider":"crosshair","target":"src/app/auth.py:validate_token","analysis_kind":"asserts","origin":"SPEC_DERIVED","timeout_seconds":10}'
 ```
 
 Roll back while BananaMe still owns the post-edit state:
@@ -657,7 +737,9 @@ For MCP, the host must bind the repository through `BANANAME_WORKSPACE_ROOT`; th
 
 ## Agent Skill
 
-`skill/SKILL.md` teaches an AI host the minimal operating discipline:
+`skills/bananame/SKILL.md` is the canonical portable/Codex skill path. `skill/SKILL.md` remains a compatibility mirror and `src/bananame/SKILL.md` is included in the installed Python package. They contain the same instructions.
+
+The Skill teaches an AI host the minimal operating discipline:
 
 ```text
 1. understand current state
@@ -685,8 +767,8 @@ The Skill contains procedure. The Python package contains mechanics. The MCP lay
 
 ## Status
 
-BananaMe v0.1.1 is an **experimental alpha hardening release**.
+BananaMe v0.1.2 is an **experimental alpha composable-verification release**.
 
-The safe mutation path now includes target-scoped revalidation, overlap-safe same-file edit planning, a short cross-process commit/recovery lock, durable recovery journals, explicit recovery, completeness metadata and four-state verification evidence. Repository intelligence remains deliberately conservative and will be expanded behind the existing interface.
+The safe mutation path retains the v0.1.1 concurrency/recovery guarantees. v0.1.2 adds explicit optional Hypothesis and CrossHair verification behind the existing `verify` operation, without adding mandatory runtime dependencies, automatic property generation, automatic symbolic execution, or new MCP tools. Repository intelligence remains deliberately conservative and will be expanded behind the existing interface.
 
 The project does not currently claim to outperform Aider or other coding agents. That claim, if it is ever made, must be earned through controlled evaluation of localization quality, context cost, mutation reliability, verification outcomes and wall-clock overhead.

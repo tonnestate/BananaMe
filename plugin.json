@@ -1,0 +1,18 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "bananame",
+  "version": "0.1.2",
+  "description": "Headless AI-to-AI coding substrate for bounded repository understanding, guarded transactional mutation, and composable verification evidence.",
+  "author": {
+    "name": "TonnEstate"
+  },
+  "repository": "https://github.com/tonnestate/BananaMe",
+  "license": "Apache-2.0",
+  "keywords": [
+    "ai-agents",
+    "coding-agents",
+    "mcp",
+    "code-intelligence",
+    "verification"
+  ]
+}
